@@ -1,0 +1,2203 @@
+openapi: 3.2.0
+info:
+  title: Morah API — Módulos App do Morador, Síndico e Portaria
+  version: "1.0.0"
+  license:
+    name: Proprietary
+  description: |
+    API do Sistema Morah cobrindo exclusivamente os módulos solicitados para esta entrega:
+    Login (sessão/contexto sobre Keycloak), Tela Inicial, Financeiro, Portaria, Avisos,
+    Reserva de Áreas Comuns, Minha Unidade e Encomendas.
+
+    **Decisões de design e observações (ver mensagem de análise para o racional completo):**
+    - A autenticação de credenciais (CPF/senha, biometria, MFA) é 100% delegada ao Keycloak
+      (Authorization Server). Este contrato NÃO expõe endpoint de login com usuário/senha —
+      apenas endpoints de sessão (`/auth/me`, `/auth/contexto`, `/auth/refresh`, `/auth/logout`)
+      que operam sobre o token JWT emitido pelo Keycloak.
+    - Perfis (`morador`, `sindico`, `proprietario`, `portaria`) são modelados como *scopes*
+      OAuth2, refletindo os papéis Keycloak mapeados no token. `proprietario` é um scope
+      adicional cumulativo ao `morador` (o proprietário tem tudo que o morador tem, mais
+      as operações de UC26).
+    - Como uma mesma pessoa pode ter perfis diferentes em condomínios diferentes
+      (PESSOA_PERFIL x CONDOMINIO), o endpoint `POST /auth/contexto` seleciona o par
+      (condomínio, perfil) ativo e retorna um token de aplicação com essas claims —
+      os demais endpoints não recebem `condominioId`/`unidadeId` explícito, eles usam
+      o contexto do token.
+    - Erros seguem RFC 9457 (`application/problem+json`), nativamente suportado pelo
+      Spring Boot 3 (`ProblemDetail`).
+    - Listas usam paginação no padrão Spring Data (`page`, `size`, `sort`).
+tags:
+  - name: Login
+    description: Sessão, contexto ativo (condomínio/perfil) e perfil autenticado. Credenciais em si ficam no Keycloak.
+  - name: Tela Inicial
+    description: Painel inicial agregando os principais dados do perfil ativo.
+  - name: Financeiro
+    description: Boletos/cobranças, PIX, documentos financeiros e gestão de inadimplência.
+  - name: Portaria
+    description: Autorização e registro de entrada de visitantes.
+  - name: Avisos
+    description: Mural de comunicados do condomínio.
+  - name: Reservas
+    description: Reserva e vistoria de áreas comuns.
+  - name: Minha Unidade
+    description: Dados da unidade, vínculos e gestão de inquilinos.
+  - name: Encomendas
+    description: Recebimento, autorização de retirada por terceiros e baixa de encomendas.
+  - name: Notificações
+    description: Notificações internas que sustentam os fluxos de Portaria, Encomendas e Avisos.
+servers:
+  - url: https://api.morah.com.br/v1
+    description: Produção
+  - url: https://api-staging.morah.com.br/v1
+    description: Staging
+security:
+  - keycloakBearer: [ ]
+paths:
+  /auth/me:
+    get:
+      tags: [ Login ]
+      summary: Consultar a pessoa autenticada e seus perfis disponíveis
+      operationId: getMe
+      security:
+        - keycloakBearer: [ morador, sindico, proprietario, portaria ]
+      responses:
+        "200":
+          description: Dados da pessoa autenticada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          $ref: "#/components/responses/NaoAutenticado"
+
+  /auth/contexto:
+    post:
+      tags: [ Login ]
+      summary: Selecionar o par condomínio/perfil ativo da sessão
+      description: |
+        Necessário quando a pessoa possui mais de um vínculo (ex.: síndico em um condomínio
+        e morador em outro). Retorna um novo token de aplicação com as claims
+        `condominio_ativo` e `perfil_ativo`, usadas implicitamente por todos os outros endpoints.
+      operationId: selecionarContexto
+      security:
+        - keycloakBearer: [ morador, sindico, proprietario, portaria ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ condominioId, perfil ]
+              properties:
+                condominioId:
+                  type: integer
+                  format: int64
+                perfil:
+                  $ref: "#/components/schemas/Perfil"
+      responses:
+        "200":
+          description: Contexto selecionado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextoAtivoResponse"
+        "403":
+          description: A pessoa não possui o vínculo (condomínio, perfil) solicitado
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /auth/refresh:
+    post:
+      tags: [ Login ]
+      summary: Renovar o token de aplicação a partir de um refresh token válido
+      operationId: renovarToken
+      security: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ refreshToken ]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        "200":
+          description: Novo par de tokens
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextoAtivoResponse"
+        "401":
+          $ref: "#/components/responses/NaoAutenticado"
+
+  /auth/logout:
+    post:
+      tags: [ Login ]
+      summary: Encerrar a sessão (revogar refresh token no Keycloak)
+      operationId: logout
+      security:
+        - keycloakBearer: [ morador, sindico, proprietario, portaria ]
+      responses:
+        "204":
+          description: Sessão encerrada
+
+  /home/dashboard:
+    get:
+      tags: [ Tela Inicial ]
+      summary: Obter os dados agregados da tela inicial do perfil ativo
+      description: |
+        O formato retornado varia conforme `perfil_ativo` do token (discriminador `perfil`
+        no corpo da resposta). Um único endpoint agregado evita múltiplas chamadas do
+        app mobile ao abrir a tela inicial.
+      operationId: getDashboard
+      security:
+        - keycloakBearer: [ morador, sindico, proprietario, portaria ]
+      responses:
+        "200":
+          description: Dados da tela inicial
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/DashboardMorador"
+                  - $ref: "#/components/schemas/DashboardSindico"
+                  - $ref: "#/components/schemas/DashboardPortaria"
+                discriminator:
+                  propertyName: perfil
+                  mapping:
+                    morador: "#/components/schemas/DashboardMorador"
+                    proprietario: "#/components/schemas/DashboardMorador"
+                    sindico: "#/components/schemas/DashboardSindico"
+                    portaria: "#/components/schemas/DashboardPortaria"
+
+  /financeiro/cobrancas:
+    get:
+      tags: [ Financeiro ]
+      summary: Listar cobranças (boletos) da unidade ativa ou do condomínio (síndico)
+      operationId: listarCobrancas
+      security:
+        - keycloakBearer: [ morador, proprietario, sindico ]
+      parameters:
+        - $ref: "#/components/parameters/StatusCobranca"
+        - $ref: "#/components/parameters/Competencia"
+        - name: unidadeId
+          in: query
+          description: Somente para síndico — filtra por unidade específica do condomínio.
+          schema:
+            type: integer
+            format: int64
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: Lista de cobranças
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CobrancaPage"
+
+  /financeiro/cobrancas/{cobrancaId}:
+    parameters:
+      - $ref: "#/components/parameters/CobrancaId"
+    get:
+      tags: [ Financeiro ]
+      summary: Detalhar uma cobrança
+      operationId: getCobranca
+      security:
+        - keycloakBearer: [ morador, proprietario, sindico ]
+      responses:
+        "200":
+          description: Detalhe da cobrança
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cobranca"
+        "404":
+          $ref: "#/components/responses/NaoEncontrado"
+
+  /financeiro/cobrancas/{cobrancaId}/pix:
+    parameters:
+      - $ref: "#/components/parameters/CobrancaId"
+    get:
+      tags: [ Financeiro ]
+      summary: Gerar/obter o código PIX copia-e-cola da cobrança
+      operationId: getPixCobranca
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      responses:
+        "200":
+          description: Código PIX
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PixResponse"
+        "409":
+          description: Cobrança já está paga ou cancelada
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /financeiro/cobrancas/{cobrancaId}/baixa-manual:
+    parameters:
+      - $ref: "#/components/parameters/CobrancaId"
+    post:
+      tags: [ Financeiro ]
+      summary: Registrar baixa manual de um pagamento recebido fora do gateway
+      operationId: baixarCobrancaManualmente
+      security:
+        - keycloakBearer: [ sindico ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BaixaManualRequest"
+      responses:
+        "200":
+          description: Cobrança atualizada para "pago"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cobranca"
+
+  /financeiro/webhooks/pagamentos:
+    post:
+      tags: [ Financeiro ]
+      summary: Webhook do gateway de pagamento (confirmação de PIX)
+      description: |
+        Chamado pelo gateway financeiro, não pelo app. Autenticado por assinatura HMAC
+        no cabeçalho, não por token de usuário.
+      operationId: receberWebhookPagamento
+      security:
+        - webhookSignature: [ ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PagamentoWebhookPayload"
+      responses:
+        "202":
+          description: Notificação aceita para processamento assíncrono
+
+  /financeiro/documentos:
+    get:
+      tags: [ Financeiro ]
+      summary: Listar documentos financeiros publicados (notas fiscais, prestação de contas)
+      operationId: listarDocumentosFinanceiros
+      security:
+        - keycloakBearer: [ morador, proprietario, sindico ]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: Lista de documentos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentoFinanceiroPage"
+    post:
+      tags: [ Financeiro ]
+      summary: Publicar um novo documento financeiro
+      operationId: publicarDocumentoFinanceiro
+      security:
+        - keycloakBearer: [ sindico ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentoFinanceiroCreateRequest"
+      responses:
+        "201":
+          description: Documento publicado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentoFinanceiro"
+
+  /financeiro/taxas:
+    post:
+      tags: [ Financeiro ]
+      summary: Cadastrar uma taxa/rateio para o condomínio
+      operationId: criarTaxa
+      security:
+        - keycloakBearer: [ sindico ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaxaCreateRequest"
+      responses:
+        "201":
+          description: Taxa criada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Taxa"
+
+  /financeiro/taxas/{taxaId}/gerar-cobrancas:
+    parameters:
+      - name: taxaId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [ Financeiro ]
+      summary: Gerar cobranças em lote para todas as unidades a partir de uma taxa
+      operationId: gerarCobrancasEmLote
+      security:
+        - keycloakBearer: [ sindico ]
+      responses:
+        "202":
+          description: Lote de cobranças processado (com relatório de falhas por unidade)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GerarCobrancasResponse"
+
+  /financeiro/inadimplencia:
+    get:
+      tags: [ Financeiro ]
+      summary: Obter o resumo de inadimplência do condomínio
+      operationId: getResumoInadimplencia
+      security:
+        - keycloakBearer: [ sindico ]
+      responses:
+        "200":
+          description: Resumo de inadimplência
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InadimplenciaResumo"
+
+  /portaria/visitantes:
+    post:
+      tags: [ Portaria ]
+      summary: Registrar um visitante e solicitar autorização de entrada ao morador
+      operationId: registrarVisitante
+      security:
+        - keycloakBearer: [ portaria ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutorizacaoVisitaCreateRequest"
+      responses:
+        "201":
+          description: Autorização criada e notificação enviada ao morador
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutorizacaoVisita"
+
+  /portaria/autorizacoes:
+    get:
+      tags: [ Portaria ]
+      summary: Listar autorizações de visita (fila da guarita ou pendências do morador)
+      operationId: listarAutorizacoes
+      security:
+        - keycloakBearer: [ portaria, morador, proprietario ]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/StatusAutorizacaoVisita"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: Lista de autorizações
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutorizacaoVisitaPage"
+
+  /portaria/autorizacoes/{autorizacaoId}:
+    parameters:
+      - name: autorizacaoId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [ Portaria ]
+      summary: Detalhar uma autorização de visita
+      operationId: getAutorizacao
+      security:
+        - keycloakBearer: [ portaria, morador, proprietario ]
+      responses:
+        "200":
+          description: Detalhe da autorização
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutorizacaoVisita"
+        "404":
+          $ref: "#/components/responses/NaoEncontrado"
+
+  /portaria/autorizacoes/{autorizacaoId}/decisao:
+    parameters:
+      - name: autorizacaoId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    patch:
+      tags: [ Portaria ]
+      summary: Autorizar ou recusar a entrada de um visitante
+      operationId: decidirAutorizacao
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisaoAutorizacaoRequest"
+      responses:
+        "200":
+          description: Decisão registrada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutorizacaoVisita"
+        "409":
+          description: Autorização já expirada ou já decidida
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /portaria/autorizacoes/{autorizacaoId}/reenviar:
+    parameters:
+      - name: autorizacaoId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [ Portaria ]
+      summary: Reenviar a notificação push de autorização pendente
+      operationId: reenviarAutorizacao
+      security:
+        - keycloakBearer: [ portaria ]
+      responses:
+        "202":
+          description: Notificação reenviada
+
+  /portaria/acessos:
+    get:
+      tags: [ Portaria ]
+      summary: Consultar o histórico de acessos do condomínio
+      operationId: listarAcessos
+      security:
+        - keycloakBearer: [ portaria, sindico ]
+      parameters:
+        - name: data
+          in: query
+          schema:
+            type: string
+            format: date
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: Lista de acessos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcessoPage"
+    post:
+      tags: [ Portaria ]
+      summary: Registrar a entrada ou saída efetiva de um visitante já autorizado
+      operationId: registrarAcesso
+      security:
+        - keycloakBearer: [ portaria ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcessoCreateRequest"
+      responses:
+        "201":
+          description: Acesso registrado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acesso"
+
+  /avisos:
+    get:
+      tags: [ Avisos ]
+      summary: Listar avisos vigentes visíveis ao contexto ativo
+      operationId: listarAvisos
+      security:
+        - keycloakBearer: [ morador, proprietario, sindico, portaria ]
+      parameters:
+        - name: categoria
+          in: query
+          schema:
+            type: string
+            example: manutencao
+        - name: prioridade
+          in: query
+          schema:
+            $ref: "#/components/schemas/PrioridadeAviso"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: Lista de avisos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvisoPage"
+    post:
+      tags: [ Avisos ]
+      summary: Publicar um novo aviso
+      operationId: criarAviso
+      security:
+        - keycloakBearer: [ sindico ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AvisoCreateRequest"
+      responses:
+        "201":
+          description: Aviso publicado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Aviso"
+
+  /avisos/{avisoId}:
+    parameters:
+      - name: avisoId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [ Avisos ]
+      summary: Detalhar um aviso (marca como lido para o perfil ativo)
+      operationId: getAviso
+      security:
+        - keycloakBearer: [ morador, proprietario, sindico, portaria ]
+      responses:
+        "200":
+          description: Detalhe do aviso
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Aviso"
+        "410":
+          description: Aviso fora de vigência
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    patch:
+      tags: [ Avisos ]
+      summary: Editar um aviso existente
+      operationId: atualizarAviso
+      security:
+        - keycloakBearer: [ sindico ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AvisoUpdateRequest"
+      responses:
+        "200":
+          description: Aviso atualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Aviso"
+    delete:
+      tags: [ Avisos ]
+      summary: Remover/expirar um aviso
+      operationId: removerAviso
+      security:
+        - keycloakBearer: [ sindico ]
+      responses:
+        "204":
+          description: Aviso removido
+
+  /areas-comuns:
+    get:
+      tags: [ Reservas ]
+      summary: Listar as áreas comuns disponíveis para reserva no condomínio ativo
+      operationId: listarAreasComuns
+      security:
+        - keycloakBearer: [ morador, proprietario, sindico, portaria ]
+      responses:
+        "200":
+          description: Lista de áreas comuns
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AreaComum"
+
+  /areas-comuns/{areaComumId}/disponibilidade:
+    parameters:
+      - name: areaComumId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [ Reservas ]
+      summary: Consultar horários disponíveis de uma área comum em uma data
+      operationId: getDisponibilidadeAreaComum
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      parameters:
+        - name: data
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Disponibilidade do dia
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Disponibilidade"
+
+  /reservas:
+    get:
+      tags: [ Reservas ]
+      summary: Listar reservas (próprias, do dia na guarita, ou do condomínio para o síndico)
+      operationId: listarReservas
+      security:
+        - keycloakBearer: [ morador, proprietario, portaria, sindico ]
+      parameters:
+        - name: data
+          in: query
+          schema:
+            type: string
+            format: date
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: Lista de reservas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReservaPage"
+    post:
+      tags: [ Reservas ]
+      summary: Criar uma reserva de área comum
+      operationId: criarReserva
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReservaCreateRequest"
+      responses:
+        "201":
+          description: Reserva confirmada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reserva"
+        "409":
+          description: Horário indisponível (concorrência com outra reserva)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /reservas/{reservaId}:
+    parameters:
+      - name: reservaId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [ Reservas ]
+      summary: Detalhar uma reserva
+      operationId: getReserva
+      security:
+        - keycloakBearer: [ morador, proprietario, portaria, sindico ]
+      responses:
+        "200":
+          description: Detalhe da reserva
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reserva"
+    delete:
+      tags: [ Reservas ]
+      summary: Cancelar uma reserva
+      operationId: cancelarReserva
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      responses:
+        "204":
+          description: Reserva cancelada
+
+  /reservas/{reservaId}/vistoria:
+    parameters:
+      - name: reservaId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [ Reservas ]
+      summary: Registrar vistoria de entrada ou saída do espaço reservado
+      operationId: registrarVistoriaReserva
+      security:
+        - keycloakBearer: [ portaria ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VistoriaRequest"
+      responses:
+        "200":
+          description: Vistoria registrada (gera ocorrência automaticamente se houver dano)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reserva"
+
+  /unidades/minha:
+    get:
+      tags: [ Minha Unidade ]
+      summary: Consultar os dados da unidade vinculada ao contexto ativo
+      operationId: getMinhaUnidade
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      responses:
+        "200":
+          description: Dados da unidade
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Unidade"
+
+  /unidades/minha/vinculos:
+    get:
+      tags: [ Minha Unidade ]
+      summary: Listar os vínculos (moradores e dependentes) da unidade ativa
+      operationId: listarVinculosMinhaUnidade
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      responses:
+        "200":
+          description: Lista de vínculos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VinculoUnidade"
+
+  /unidades/minha/vinculos/solicitacoes:
+    post:
+      tags: [ Minha Unidade ]
+      summary: Solicitar a inclusão de um novo vínculo (ex. dependente) à unidade
+      operationId: solicitarVinculo
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SolicitacaoVinculoCreateRequest"
+      responses:
+        "202":
+          description: Solicitação enviada para aprovação do síndico
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SolicitacaoVinculo"
+
+  /unidades/{unidadeId}:
+    parameters:
+      - name: unidadeId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [ Minha Unidade ]
+      summary: Consultar os dados de qualquer unidade do condomínio (uso administrativo)
+      operationId: getUnidade
+      security:
+        - keycloakBearer: [ sindico ]
+      responses:
+        "200":
+          description: Dados da unidade
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Unidade"
+
+  /unidades/{unidadeId}/vinculos/solicitacoes:
+    parameters:
+      - name: unidadeId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [ Minha Unidade ]
+      summary: Listar solicitações de vínculo pendentes de aprovação da unidade
+      operationId: listarSolicitacoesVinculo
+      security:
+        - keycloakBearer: [ sindico ]
+      responses:
+        "200":
+          description: Lista de solicitações
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SolicitacaoVinculo"
+
+  /unidades/{unidadeId}/vinculos/solicitacoes/{solicitacaoId}:
+    parameters:
+      - name: unidadeId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      - name: solicitacaoId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    patch:
+      tags: [ Minha Unidade ]
+      summary: Aprovar ou rejeitar uma solicitação de vínculo
+      operationId: decidirSolicitacaoVinculo
+      security:
+        - keycloakBearer: [ sindico ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ decisao ]
+              properties:
+                decisao:
+                  type: string
+                  enum: [ aprovada, rejeitada ]
+                justificativa:
+                  type: string
+      responses:
+        "200":
+          description: Solicitação decidida
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SolicitacaoVinculo"
+
+  /unidades/minha/inquilinos:
+    post:
+      tags: [ Minha Unidade ]
+      summary: Cadastrar um inquilino e vincular o contrato de locação à unidade
+      operationId: cadastrarInquilino
+      security:
+        - keycloakBearer: [ proprietario ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InquilinoCreateRequest"
+      responses:
+        "201":
+          description: Inquilino cadastrado e convite de acesso enviado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VinculoUnidade"
+
+  /unidades/minha/inquilinos/{vinculoId}:
+    parameters:
+      - name: vinculoId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    delete:
+      tags: [ Minha Unidade ]
+      summary: Encerrar antecipadamente o contrato de um inquilino
+      operationId: encerrarInquilino
+      security:
+        - keycloakBearer: [ proprietario ]
+      responses:
+        "204":
+          description: Vínculo encerrado e acesso do inquilino revogado
+
+  /encomendas:
+    get:
+      tags: [ Encomendas ]
+      summary: Listar encomendas (da unidade ativa, ou de todo o condomínio para portaria/síndico)
+      operationId: listarEncomendas
+      security:
+        - keycloakBearer: [ morador, proprietario, portaria, sindico ]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/StatusEncomenda"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: Lista de encomendas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EncomendaPage"
+    post:
+      tags: [ Encomendas ]
+      summary: Registrar o recebimento de uma encomenda na portaria
+      operationId: registrarEncomenda
+      security:
+        - keycloakBearer: [ portaria ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EncomendaCreateRequest"
+      responses:
+        "201":
+          description: Encomenda registrada e morador notificado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Encomenda"
+
+  /encomendas/{encomendaId}:
+    parameters:
+      - name: encomendaId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [ Encomendas ]
+      summary: Detalhar uma encomenda
+      operationId: getEncomenda
+      security:
+        - keycloakBearer: [ morador, proprietario, portaria, sindico ]
+      responses:
+        "200":
+          description: Detalhe da encomenda
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Encomenda"
+
+  /encomendas/{encomendaId}/autorizacoes-retirada:
+    parameters:
+      - name: encomendaId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [ Encomendas ]
+      summary: Autorizar um terceiro a retirar a encomenda
+      operationId: autorizarRetiradaTerceiro
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutorizacaoRetiradaCreateRequest"
+      responses:
+        "201":
+          description: Autorização temporária criada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutorizacaoRetirada"
+
+  /encomendas/{encomendaId}/retirada:
+    parameters:
+      - name: encomendaId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [ Encomendas ]
+      summary: Confirmar a retirada da encomenda na portaria
+      operationId: confirmarRetiradaEncomenda
+      security:
+        - keycloakBearer: [ portaria ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetiradaConfirmRequest"
+      responses:
+        "200":
+          description: Encomenda marcada como retirada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Encomenda"
+        "409":
+          description: Código de retirada inválido ou expirado
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /encomendas/{encomendaId}/ocorrencias:
+    parameters:
+      - name: encomendaId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      tags: [ Encomendas ]
+      summary: Abrir uma ocorrência de extravio vinculada à encomenda
+      operationId: abrirOcorrenciaEncomenda
+      security:
+        - keycloakBearer: [ morador, proprietario ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OcorrenciaCreateRequest"
+      responses:
+        "201":
+          description: Ocorrência aberta
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ocorrencia"
+
+  /notificacoes:
+    get:
+      tags: [ Notificações ]
+      summary: Listar notificações do perfil ativo
+      operationId: listarNotificacoes
+      security:
+        - keycloakBearer: [ morador, proprietario, sindico, portaria ]
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Size"
+      responses:
+        "200":
+          description: Lista de notificações
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Notificacao"
+
+  /notificacoes/{notificacaoId}/lida:
+    parameters:
+      - name: notificacaoId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    patch:
+      tags: [ Notificações ]
+      summary: Marcar uma notificação como lida
+      operationId: marcarNotificacaoLida
+      security:
+        - keycloakBearer: [ morador, proprietario, sindico, portaria ]
+      responses:
+        "200":
+          description: Notificação atualizada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notificacao"
+
+components:
+  securitySchemes:
+    keycloakBearer:
+      type: oauth2
+      description: |
+        Emissão de token 100% via Keycloak. Fluxo recomendado para o app React
+        (mobile/web) é Authorization Code + PKCE (redirecionamento por aba segura do
+        navegador do sistema), não um formulário de senha embutido no app — ver nota
+        na descrição da API. O fluxo `password` é documentado apenas por refletir
+        literalmente o REQ001 do documento de análise; seu uso é desaconselhado.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.morah.com.br/realms/morah/protocol/openid-connect/auth
+          tokenUrl: https://auth.morah.com.br/realms/morah/protocol/openid-connect/token
+          refreshUrl: https://auth.morah.com.br/realms/morah/protocol/openid-connect/token
+          scopes:
+            morador: Acesso às funcionalidades do morador
+            proprietario: Acesso adicional às funcionalidades de proprietário (cumulativo ao morador)
+            sindico: Acesso às funcionalidades administrativas do síndico
+            portaria: Acesso ao painel operacional da portaria
+        password:
+          tokenUrl: https://auth.morah.com.br/realms/morah/protocol/openid-connect/token
+          scopes:
+            morador: Acesso às funcionalidades do morador
+            proprietario: Acesso adicional às funcionalidades de proprietário (cumulativo ao morador)
+            sindico: Acesso às funcionalidades administrativas do síndico
+            portaria: Acesso ao painel operacional da portaria
+    webhookSignature:
+      type: apiKey
+      in: header
+      name: X-Webhook-Signature
+      description: Assinatura HMAC-SHA256 do corpo da requisição, calculada com o segredo compartilhado do gateway de pagamento.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Size:
+      name: size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    CobrancaId:
+      name: cobrancaId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    StatusCobranca:
+      name: status
+      in: query
+      schema:
+        $ref: "#/components/schemas/StatusCobranca"
+    Competencia:
+      name: competencia
+      in: query
+      description: Competência no formato AAAA-MM
+      schema:
+        type: string
+        pattern: '^\d{4}-\d{2}$'
+        example: "2026-09"
+
+  responses:
+    NaoAutenticado:
+      description: Token ausente, expirado ou inválido
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NaoEncontrado:
+      description: Recurso não encontrado
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    Perfil:
+      type: string
+      enum: [ morador, proprietario, sindico, portaria ]
+
+    Problem:
+      type: object
+      description: Formato de erro padrão (RFC 9457)
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri
+        erros:
+          type: array
+          items:
+            type: object
+            properties:
+              campo:
+                type: string
+              mensagem:
+                type: string
+
+    PageMetadata:
+      type: object
+      properties:
+        page:
+          type: integer
+        size:
+          type: integer
+        totalElements:
+          type: integer
+          format: int64
+        totalPages:
+          type: integer
+
+    PessoaResumo:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        nome:
+          type: string
+        telefone:
+          type: string
+
+    MeResponse:
+      type: object
+      properties:
+        pessoa:
+          type: object
+          properties:
+            id:
+              type: integer
+              format: int64
+            nome:
+              type: string
+            cpf:
+              type: string
+            email:
+              type: string
+              format: email
+        perfisDisponiveis:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerfilDisponivel"
+        contextoAtivo:
+          $ref: "#/components/schemas/ContextoAtivo"
+
+    PerfilDisponivel:
+      type: object
+      properties:
+        perfil:
+          $ref: "#/components/schemas/Perfil"
+        condominioId:
+          type: integer
+          format: int64
+        condominioNome:
+          type: string
+        unidadeId:
+          type: integer
+          format: int64
+
+    ContextoAtivo:
+      type: object
+      properties:
+        perfil:
+          $ref: "#/components/schemas/Perfil"
+        condominioId:
+          type: integer
+          format: int64
+        condominioNome:
+          type: string
+        unidadeId:
+          type: integer
+          format: int64
+
+    ContextoAtivoResponse:
+      type: object
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: integer
+        contexto:
+          $ref: "#/components/schemas/ContextoAtivo"
+
+    Unidade:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        blocoId:
+          type: integer
+          format: int64
+        blocoNome:
+          type: string
+        identificacao:
+          type: string
+          example: "Apto 302"
+        tipo:
+          type: string
+        areaM2:
+          type: number
+        fracaoIdeal:
+          type: number
+        status:
+          type: string
+
+    VinculoUnidade:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        unidadeId:
+          type: integer
+          format: int64
+        pessoa:
+          $ref: "#/components/schemas/PessoaResumo"
+        tipoVinculo:
+          $ref: "#/components/schemas/TipoVinculo"
+        principal:
+          type: boolean
+        inicio:
+          type: string
+          format: date
+        fim:
+          type: string
+          format: date
+
+    TipoVinculo:
+      type: string
+      enum: [ proprietario, inquilino, dependente ]
+
+    SolicitacaoVinculoCreateRequest:
+      type: object
+      required: [ tipoVinculo, nome ]
+      properties:
+        tipoVinculo:
+          $ref: "#/components/schemas/TipoVinculo"
+        nome:
+          type: string
+        cpf:
+          type: string
+        observacao:
+          type: string
+
+    SolicitacaoVinculo:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        unidadeId:
+          type: integer
+          format: int64
+        tipoVinculo:
+          $ref: "#/components/schemas/TipoVinculo"
+        nomeSolicitado:
+          type: string
+        status:
+          type: string
+          enum: [ pendente, aprovada, rejeitada ]
+        solicitadoEm:
+          type: string
+          format: date-time
+
+    InquilinoCreateRequest:
+      type: object
+      required: [ nome, cpf, contratoInicio ]
+      properties:
+        nome:
+          type: string
+        cpf:
+          type: string
+        email:
+          type: string
+          format: email
+        telefone:
+          type: string
+        contratoInicio:
+          type: string
+          format: date
+        contratoFim:
+          type: string
+          format: date
+
+    StatusCobranca:
+      type: string
+      enum: [ pendente, pago, atrasado, cancelado ]
+
+    Cobranca:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        taxaDescricao:
+          type: string
+        competencia:
+          type: string
+        vencimento:
+          type: string
+          format: date
+        valorOriginal:
+          type: number
+        multa:
+          type: number
+        juros:
+          type: number
+        valorTotal:
+          type: number
+        status:
+          $ref: "#/components/schemas/StatusCobranca"
+
+    CobrancaPage:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/Cobranca"
+        page:
+          $ref: "#/components/schemas/PageMetadata"
+
+    PixResponse:
+      type: object
+      properties:
+        codigoPix:
+          type: string
+        expiraEm:
+          type: string
+          format: date-time
+
+    BaixaManualRequest:
+      type: object
+      required: [ meio, valor, pagoEm ]
+      properties:
+        meio:
+          type: string
+          example: transferencia
+        valor:
+          type: number
+        pagoEm:
+          type: string
+          format: date-time
+        observacao:
+          type: string
+
+    PagamentoWebhookPayload:
+      type: object
+      required: [ transacaoId, cobrancaId, status ]
+      properties:
+        transacaoId:
+          type: string
+        cobrancaId:
+          type: integer
+          format: int64
+        valor:
+          type: number
+        status:
+          type: string
+          enum: [ confirmado, falhou ]
+        pagoEm:
+          type: string
+          format: date-time
+
+    DocumentoFinanceiro:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        tipo:
+          type: string
+        titulo:
+          type: string
+        arquivoUrl:
+          type: string
+          format: uri
+        competencia:
+          type: string
+          format: date
+        publicadoEm:
+          type: string
+          format: date-time
+
+    DocumentoFinanceiroPage:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentoFinanceiro"
+        page:
+          $ref: "#/components/schemas/PageMetadata"
+
+    DocumentoFinanceiroCreateRequest:
+      type: object
+      required: [ tipo, titulo, arquivoUrl ]
+      properties:
+        tipo:
+          type: string
+          example: nota_fiscal
+        titulo:
+          type: string
+        arquivoUrl:
+          type: string
+          format: uri
+        competencia:
+          type: string
+          format: date
+
+    TaxaCreateRequest:
+      type: object
+      required: [ descricao, competencia, valor, tipoRateio, vencimentoDia ]
+      properties:
+        descricao:
+          type: string
+        competencia:
+          type: string
+        valor:
+          type: number
+        tipoRateio:
+          type: string
+          enum: [ igualitario, fracao_ideal ]
+        vencimentoDia:
+          type: integer
+          minimum: 1
+          maximum: 28
+
+    Taxa:
+      allOf:
+        - $ref: "#/components/schemas/TaxaCreateRequest"
+        - type: object
+          properties:
+            id:
+              type: integer
+              format: int64
+
+    GerarCobrancasResponse:
+      type: object
+      properties:
+        taxaId:
+          type: integer
+          format: int64
+        totalGeradas:
+          type: integer
+        falhas:
+          type: array
+          items:
+            type: object
+            properties:
+              unidadeId:
+                type: integer
+                format: int64
+              motivo:
+                type: string
+
+    InadimplenciaResumo:
+      type: object
+      properties:
+        totalUnidades:
+          type: integer
+        unidadesInadimplentes:
+          type: integer
+        percentualInadimplencia:
+          type: number
+        valorTotalEmAberto:
+          type: number
+
+    AreaComum:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        nome:
+          type: string
+        descricao:
+          type: string
+        capacidade:
+          type: integer
+        taxa:
+          type: number
+        requerReserva:
+          type: boolean
+        status:
+          type: string
+
+    Disponibilidade:
+      type: object
+      properties:
+        data:
+          type: string
+          format: date
+        horarios:
+          type: array
+          items:
+            type: object
+            properties:
+              inicio:
+                type: string
+                format: date-time
+              fim:
+                type: string
+                format: date-time
+              disponivel:
+                type: boolean
+
+    ReservaCreateRequest:
+      type: object
+      required: [ areaComumId, inicio, fim ]
+      properties:
+        areaComumId:
+          type: integer
+          format: int64
+        inicio:
+          type: string
+          format: date-time
+        fim:
+          type: string
+          format: date-time
+
+    StatusReserva:
+      type: string
+      enum: [ confirmada, cancelada, concluida, nao_compareceu ]
+
+    Reserva:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        areaComumId:
+          type: integer
+          format: int64
+        areaComumNome:
+          type: string
+        unidadeId:
+          type: integer
+          format: int64
+        solicitante:
+          $ref: "#/components/schemas/PessoaResumo"
+        inicio:
+          type: string
+          format: date-time
+        fim:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/StatusReserva"
+        valor:
+          type: number
+
+    ReservaPage:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/Reserva"
+        page:
+          $ref: "#/components/schemas/PageMetadata"
+
+    VistoriaRequest:
+      type: object
+      required: [ momento ]
+      properties:
+        momento:
+          type: string
+          enum: [ entrada, saida ]
+        observacao:
+          type: string
+        dano:
+          type: boolean
+          default: false
+        fotosUrl:
+          type: array
+          items:
+            type: string
+            format: uri
+
+    VisitanteInput:
+      type: object
+      required: [ nome ]
+      properties:
+        nome:
+          type: string
+        documento:
+          type: string
+        telefone:
+          type: string
+
+    Visitante:
+      allOf:
+        - $ref: "#/components/schemas/VisitanteInput"
+        - type: object
+          properties:
+            id:
+              type: integer
+              format: int64
+            observacao:
+              type: string
+
+    StatusAutorizacaoVisita:
+      type: string
+      enum: [ pendente, autorizada, recusada, expirada ]
+
+    AutorizacaoVisitaCreateRequest:
+      type: object
+      required: [ unidadeId, visitante, motivo ]
+      properties:
+        unidadeId:
+          type: integer
+          format: int64
+        visitante:
+          $ref: "#/components/schemas/VisitanteInput"
+        motivo:
+          type: string
+        fotoUrl:
+          type: string
+          format: uri
+
+    AutorizacaoVisita:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        visitante:
+          $ref: "#/components/schemas/Visitante"
+        unidadeId:
+          type: integer
+          format: int64
+        motivo:
+          type: string
+        solicitadoEm:
+          type: string
+          format: date-time
+        respondidoEm:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/StatusAutorizacaoVisita"
+
+    AutorizacaoVisitaPage:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/AutorizacaoVisita"
+        page:
+          $ref: "#/components/schemas/PageMetadata"
+
+    DecisaoAutorizacaoRequest:
+      type: object
+      required: [ decisao ]
+      properties:
+        decisao:
+          type: string
+          enum: [ autorizado, recusado ]
+        justificativa:
+          type: string
+
+    AcessoCreateRequest:
+      type: object
+      required: [ visitanteId, tipo ]
+      properties:
+        autorizacaoId:
+          type: integer
+          format: int64
+        visitanteId:
+          type: integer
+          format: int64
+        tipo:
+          type: string
+          enum: [ entrada, saida ]
+        fotoUrl:
+          type: string
+          format: uri
+
+    Acesso:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        autorizacaoId:
+          type: integer
+          format: int64
+        visitante:
+          $ref: "#/components/schemas/Visitante"
+        entrada:
+          type: string
+          format: date-time
+        saida:
+          type: string
+          format: date-time
+        tipo:
+          type: string
+        status:
+          type: string
+
+    AcessoPage:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/Acesso"
+        page:
+          $ref: "#/components/schemas/PageMetadata"
+
+    PrioridadeAviso:
+      type: string
+      enum: [ normal, urgente ]
+
+    PublicoAlvo:
+      type: object
+      required: [ tipo ]
+      properties:
+        tipo:
+          type: string
+          enum: [ condominio, bloco, unidade ]
+        blocoId:
+          type: integer
+          format: int64
+        unidadeId:
+          type: integer
+          format: int64
+
+    AvisoCreateRequest:
+      type: object
+      required: [ titulo, conteudo, publicoAlvo ]
+      properties:
+        titulo:
+          type: string
+        conteudo:
+          type: string
+        prioridade:
+          $ref: "#/components/schemas/PrioridadeAviso"
+        publicoAlvo:
+          $ref: "#/components/schemas/PublicoAlvo"
+        expiraEm:
+          type: string
+          format: date-time
+
+    AvisoUpdateRequest:
+      type: object
+      properties:
+        titulo:
+          type: string
+        conteudo:
+          type: string
+        prioridade:
+          $ref: "#/components/schemas/PrioridadeAviso"
+        expiraEm:
+          type: string
+          format: date-time
+
+    Aviso:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        titulo:
+          type: string
+        conteudo:
+          type: string
+        prioridade:
+          $ref: "#/components/schemas/PrioridadeAviso"
+        autor:
+          $ref: "#/components/schemas/PessoaResumo"
+        publicadoEm:
+          type: string
+          format: date-time
+        expiraEm:
+          type: string
+          format: date-time
+        lidoPeloUsuario:
+          type: boolean
+
+    AvisoPage:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/Aviso"
+        page:
+          $ref: "#/components/schemas/PageMetadata"
+
+    StatusEncomenda:
+      type: string
+      enum: [ aguardando_retirada, retirada, extraviada ]
+
+    EncomendaCreateRequest:
+      type: object
+      required: [ unidadeId, transportadora ]
+      properties:
+        unidadeId:
+          type: integer
+          format: int64
+        remetente:
+          type: string
+        transportadora:
+          type: string
+        codigoRastreio:
+          type: string
+        fotoUrl:
+          type: string
+          format: uri
+
+    Encomenda:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        unidadeId:
+          type: integer
+          format: int64
+        remetente:
+          type: string
+        transportadora:
+          type: string
+        codigoRastreio:
+          type: string
+        codigoRetirada:
+          type: string
+        fotoUrl:
+          type: string
+          format: uri
+        recebidaEm:
+          type: string
+          format: date-time
+        retiradaEm:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/StatusEncomenda"
+
+    EncomendaPage:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: "#/components/schemas/Encomenda"
+        page:
+          $ref: "#/components/schemas/PageMetadata"
+
+    AutorizacaoRetiradaCreateRequest:
+      type: object
+      required: [ nomeTerceiro, documento ]
+      properties:
+        nomeTerceiro:
+          type: string
+        documento:
+          type: string
+        validadeHoras:
+          type: integer
+          default: 24
+
+    AutorizacaoRetirada:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        encomendaId:
+          type: integer
+          format: int64
+        nomeTerceiro:
+          type: string
+        documento:
+          type: string
+        codigo:
+          type: string
+        validade:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [ ativa, utilizada, expirada ]
+
+    RetiradaConfirmRequest:
+      type: object
+      required: [ codigo ]
+      properties:
+        codigo:
+          type: string
+        retiradoPorNome:
+          type: string
+        retiradoPorDocumento:
+          type: string
+
+    OcorrenciaCreateRequest:
+      type: object
+      required: [ titulo, descricao ]
+      properties:
+        titulo:
+          type: string
+        descricao:
+          type: string
+
+    Ocorrencia:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        titulo:
+          type: string
+        descricao:
+          type: string
+        status:
+          type: string
+          enum: [ aberta, em_andamento, encerrada ]
+        abertaEm:
+          type: string
+          format: date-time
+        encerradaEm:
+          type: string
+          format: date-time
+
+    Notificacao:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        tipo:
+          type: string
+          enum: [ portaria, encomenda, financeiro, aviso, reserva ]
+        titulo:
+          type: string
+        mensagem:
+          type: string
+        referenciaId:
+          type: integer
+          format: int64
+        enviadaEm:
+          type: string
+          format: date-time
+        lidaEm:
+          type: string
+          format: date-time
+
+    DashboardMorador:
+      type: object
+      properties:
+        perfil:
+          type: string
+          enum: [ morador, proprietario ]
+        unidade:
+          $ref: "#/components/schemas/Unidade"
+        proximosBoletos:
+          type: array
+          items:
+            $ref: "#/components/schemas/Cobranca"
+        avisosRecentes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Aviso"
+        encomendasPendentes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Encomenda"
+        autorizacoesPendentes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AutorizacaoVisita"
+        proximasReservas:
+          type: array
+          items:
+            $ref: "#/components/schemas/Reserva"
+
+    DashboardSindico:
+      type: object
+      properties:
+        perfil:
+          type: string
+          enum: [ sindico ]
+        inadimplencia:
+          $ref: "#/components/schemas/InadimplenciaResumo"
+        avisosPublicadosRecentes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Aviso"
+        solicitacoesVinculoPendentes:
+          type: integer
+        ocorrenciasAbertas:
+          type: integer
+
+    DashboardPortaria:
+      type: object
+      properties:
+        perfil:
+          type: string
+          enum: [ portaria ]
+        autorizacoesPendentes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AutorizacaoVisita"
+        reservasDoDia:
+          type: array
+          items:
+            $ref: "#/components/schemas/Reserva"
+        encomendasRecebidasHoje:
+          type: integer
