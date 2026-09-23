@@ -1,3 +1,52 @@
 spring:
   application:
     name: Morah
+
+  # Conexao com o MongoDB.
+  # Em desenvolvimento usa o Mongo local; no Azure defina a variavel de ambiente MONGODB_URI
+  # com a string de conexao do Atlas (mongodb+srv://usuario:senha@cluster.../morah).
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://localhost:27017/morah}
+      auto-index-creation: true
+
+  # Java 21: cada requisicao roda em uma virtual thread (mais requisicoes com pouca memoria,
+  # importante no plano gratuito do Azure).
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  # O Azure Web App injeta a porta pela variavel PORT.
+  port: ${PORT:8080}
+  servlet:
+    context-path: /v1
+
+# Configuracoes proprias da aplicacao (veja PropriedadesMorah.java).
+morah:
+  jwt:
+    # TROQUE em producao: defina JWT_SEGREDO no Azure (minimo 32 caracteres).
+    segredo: ${JWT_SEGREDO:morah-segredo-de-desenvolvimento-nao-use-em-producao}
+    minutos-token: 60
+    dias-refresh: 7
+  cors:
+    origens: ${CORS_ORIGENS:http://localhost:3000,http://localhost:5173}
+  # Cria um usuario de exemplo na primeira execucao (deixe false em producao).
+  carga-inicial: ${CARGA_INICIAL:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      access: read-only
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+logging:
+  level:
+    org.morah.morah: DEBUG
