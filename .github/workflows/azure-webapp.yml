@@ -1,0 +1,41 @@
+# Publica a API no Azure Web App a cada push na branch main.
+#
+# Antes de usar:
+#   1. no Azure, baixe o "Publish profile" do seu Web App;
+#   2. no GitHub, va em Settings > Secrets and variables > Actions e crie o segredo
+#      AZURE_WEBAPP_PUBLISH_PROFILE com o conteudo do arquivo baixado;
+#   3. troque AZURE_WEBAPP_NAME abaixo pelo nome do seu Web App.
+name: Deploy no Azure Web App
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: morah-api
+  JAVA_VERSION: '21'
+
+jobs:
+  build-e-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar o Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: gradle
+
+      - name: Rodar os testes e gerar o jar
+        run: ./gradlew clean build
+
+      - name: Publicar no Azure
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: build/libs/Morah-0.0.1-SNAPSHOT.jar

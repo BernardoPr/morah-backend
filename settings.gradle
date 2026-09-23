@@ -1,1 +1,6 @@
+plugins {
+    // Baixa automaticamente o JDK 21 quando a maquina do aluno nao tiver um instalado.
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
 rootProject.name = 'Morah'

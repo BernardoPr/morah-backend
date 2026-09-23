@@ -1,0 +1,7 @@
+# Perfil de producao (ative no Azure com SPRING_PROFILES_ACTIVE=prod).
+morah:
+  carga-inicial: false
+
+logging:
+  level:
+    org.morah.morah: INFO
