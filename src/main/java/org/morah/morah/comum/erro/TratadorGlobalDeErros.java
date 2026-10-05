@@ -3,14 +3,17 @@ package org.morah.morah.comum.erro;
 import java.net.URI;
 import java.util.List;
 
+import org.springframework.beans.TypeMismatchException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -40,6 +43,16 @@ public class TratadorGlobalDeErros {
         return montar(HttpStatus.CONFLICT, "Operacao nao permitida", excecao.getMessage());
     }
 
+    @ExceptionHandler(RecursoExpiradoException.class)
+    public ProblemDetail expirado(RecursoExpiradoException excecao) {
+        return montar(HttpStatus.GONE, "Recurso fora de vigencia", excecao.getMessage());
+    }
+
+    @ExceptionHandler(DadosInvalidosException.class)
+    public ProblemDetail regraDePreenchimento(DadosInvalidosException excecao) {
+        return montar(HttpStatus.BAD_REQUEST, "Dados invalidos", excecao.getMessage());
+    }
+
     @ExceptionHandler(CredenciaisInvalidasException.class)
     public ProblemDetail naoAutenticado(CredenciaisInvalidasException excecao) {
         return montar(HttpStatus.UNAUTHORIZED, "Nao autenticado", excecao.getMessage());
@@ -61,6 +74,36 @@ public class TratadorGlobalDeErros {
                 "Verifique os campos enviados.");
         problema.setProperty("erros", erros);
         return problema;
+    }
+
+    /** Parametros de URL que nao passaram nas anotacoes (ex.: {@code @Pattern} em ?competencia=2026-13). */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ProblemDetail parametrosInvalidos(HandlerMethodValidationException excecao) {
+        List<ErroDeCampo> erros = excecao.getParameterValidationResults().stream()
+                .flatMap(resultado -> resultado.getResolvableErrors().stream()
+                        .map(erro -> new ErroDeCampo(
+                                resultado.getMethodParameter().getParameterName(), erro.getDefaultMessage())))
+                .toList();
+
+        ProblemDetail problema = montar(HttpStatus.BAD_REQUEST, "Dados invalidos",
+                "Verifique os parametros enviados.");
+        problema.setProperty("erros", erros);
+        return problema;
+    }
+
+    /** Parametro de URL com tipo errado (ex.: ?status=xyz, ?data=amanha, /cobrancas/abc). */
+    @ExceptionHandler(TypeMismatchException.class)
+    public ProblemDetail parametroInvalido(TypeMismatchException excecao) {
+        String parametro = excecao.getPropertyName() == null ? "informado" : "'" + excecao.getPropertyName() + "'";
+        return montar(HttpStatus.BAD_REQUEST, "Dados invalidos",
+                "Valor invalido para o parametro " + parametro + ": " + excecao.getValue());
+    }
+
+    /** Corpo da requisicao que nao e um JSON valido, ou com valor fora do enum (ex.: "decisao": "talvez"). */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail corpoInvalido(HttpMessageNotReadableException excecao) {
+        return montar(HttpStatus.BAD_REQUEST, "Dados invalidos",
+                "O corpo da requisicao nao pode ser lido. Confira o JSON e os valores enviados.");
     }
 
     /**

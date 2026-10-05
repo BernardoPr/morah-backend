@@ -5,7 +5,7 @@ import java.util.List;
 import org.morah.morah.aviso.dto.AvisoResponse;
 
 /**
- * PADRAO DE PROJETO: STRATEGY (exemplo 3 de 3) - contrato comum.
+ * PADRAO DE PROJETO: STRATEGY (exemplo 3 de 6) - contrato comum.
  *
  * <p><b>Problema:</b> o sindico quer baixar a lista de avisos em formatos diferentes
  * (CSV para abrir no Excel, JSON para integrar com outro sistema). Um {@code switch}

@@ -33,6 +33,16 @@ morah:
     origens: ${CORS_ORIGENS:http://localhost:3000,http://localhost:5173}
   # Cria um usuario de exemplo na primeira execucao (deixe false em producao).
   carga-inicial: ${CARGA_INICIAL:true}
+  financeiro:
+    # Segredo HMAC-SHA256 compartilhado com o gateway de pagamento (cabecalho X-Webhook-Signature).
+    # TROQUE em producao: defina WEBHOOK_SEGREDO no Azure.
+    webhook-segredo: ${WEBHOOK_SEGREDO:morah-webhook-de-desenvolvimento}
+    # Chave PIX do condominio usada no codigo copia-e-cola.
+    chave-pix: ${CHAVE_PIX:financeiro@morah.com.br}
+    minutos-validade-pix: 30
+    # Encargos de atraso: multa unica + juros simples ao mes (pro rata por dia).
+    multa-percentual: 2.0
+    juros-mensal-percentual: 1.0
 
 management:
   endpoints:

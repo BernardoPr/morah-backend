@@ -10,7 +10,7 @@ import org.morah.morah.notificacao.strategy.SeletorDeCanal;
 import org.morah.morah.usuario.modelo.Usuario;
 
 /**
- * PADRAO DE PROJETO: TEMPLATE METHOD (exemplo 3 de 3).
+ * PADRAO DE PROJETO: TEMPLATE METHOD (exemplo 3 de 4).
  *
  * <p><b>Problema:</b> toda notificacao segue o mesmo roteiro (montar titulo, montar mensagem,
  * gravar no banco, despachar). Só muda o TEXTO e o canal preferido de cada tipo.

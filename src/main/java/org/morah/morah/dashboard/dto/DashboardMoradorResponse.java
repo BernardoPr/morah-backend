@@ -3,14 +3,19 @@ package org.morah.morah.dashboard.dto;
 import java.util.List;
 
 import org.morah.morah.aviso.dto.AvisoResponse;
+import org.morah.morah.encomenda.dto.EncomendaResponse;
+import org.morah.morah.financeiro.dto.CobrancaResponse;
+import org.morah.morah.portaria.dto.AutorizacaoVisitaResponse;
+import org.morah.morah.reserva.dto.ReservaResponse;
+import org.morah.morah.unidade.dto.UnidadeResponse;
 
 /** Tela inicial de morador/proprietario (schema DashboardMorador). */
 public record DashboardMoradorResponse(
         String perfil,
-        Long unidadeId,
+        UnidadeResponse unidade,
+        List<CobrancaResponse> proximosBoletos,
         List<AvisoResponse> avisosRecentes,
-        List<Object> proximosBoletos,
-        List<Object> encomendasPendentes,
-        List<Object> autorizacoesPendentes,
-        List<Object> proximasReservas) implements DashboardResponse {
+        List<EncomendaResponse> encomendasPendentes,
+        List<AutorizacaoVisitaResponse> autorizacoesPendentes,
+        List<ReservaResponse> proximasReservas) implements DashboardResponse {
 }

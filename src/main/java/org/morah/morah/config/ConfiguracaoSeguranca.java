@@ -24,7 +24,7 @@ import lombok.RequiredArgsConstructor;
  * <ul>
  *   <li>API sem sessao (STATELESS): a identificacao vem do JWT em cada chamada;</li>
  *   <li>CSRF desligado (nao ha formulario HTML, apenas clientes que enviam token);</li>
- *   <li>rotas publicas: login, refresh, health, Swagger e monitor;</li>
+ *   <li>rotas publicas: login, refresh, webhook de pagamento, health, Swagger e monitor;</li>
  *   <li>todo o resto exige token valido;</li>
  *   <li>{@code @EnableMethodSecurity} habilita o {@code @PreAuthorize} nos controllers.</li>
  * </ul>
@@ -38,6 +38,8 @@ public class ConfiguracaoSeguranca {
     private static final String[] ROTAS_PUBLICAS = {
             "/auth/login",
             "/auth/refresh",
+            // Chamado pelo gateway de pagamento, nao pelo app: autenticado por assinatura HMAC.
+            "/financeiro/webhooks/**",
             "/actuator/health",
             "/actuator/info",
             "/monitor/**",

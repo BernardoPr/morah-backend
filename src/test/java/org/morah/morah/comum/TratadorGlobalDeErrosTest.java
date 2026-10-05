@@ -37,6 +37,17 @@ class TratadorGlobalDeErrosTest {
     }
 
     @Test
+    @DisplayName("JSON mal formado vira 400, e nao 500")
+    void jsonMalFormado() throws Exception {
+        mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"cpf\": "))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.title").value("Dados invalidos"));
+    }
+
+    @Test
     @DisplayName("metodo HTTP errado vira 405, e nao 500")
     void metodoNaoSuportado() throws Exception {
         mockMvc.perform(post("/monitor/metricas"))

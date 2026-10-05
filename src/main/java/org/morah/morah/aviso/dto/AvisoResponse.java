@@ -17,7 +17,11 @@ public record AvisoResponse(
         Instant expiraEm,
         boolean lidoPeloUsuario) {
 
-    public static AvisoResponse de(Aviso aviso) {
+    /**
+     * @param usuarioId quem esta vendo o aviso: o campo {@code lidoPeloUsuario} muda de pessoa
+     *                  para pessoa, por isso a conversao precisa saber quem perguntou.
+     */
+    public static AvisoResponse de(Aviso aviso, Long usuarioId) {
         return new AvisoResponse(
                 aviso.getId(),
                 aviso.getTitulo(),
@@ -26,7 +30,6 @@ public record AvisoResponse(
                 new PessoaResumo(aviso.getAutorId(), aviso.getAutorNome(), null),
                 aviso.getPublicadoEm(),
                 aviso.getExpiraEm(),
-                // Controle de leitura por usuario ainda nao implementado (fora do escopo da base).
-                false);
+                aviso.foiLidoPor(usuarioId));
     }
 }

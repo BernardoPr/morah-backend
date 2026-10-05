@@ -3,6 +3,8 @@ package org.morah.morah.aviso.modelo;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
+import jakarta.validation.constraints.NotNull;
+
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -36,7 +38,12 @@ public class PublicoAlvo {
         }
     }
 
+    @NotNull(message = "informe o tipo do publico alvo")
     private Tipo tipo;
+
+    /** Obrigatorio quando o tipo e "bloco". */
     private Long blocoId;
+
+    /** Obrigatorio quando o tipo e "unidade". */
     private Long unidadeId;
 }

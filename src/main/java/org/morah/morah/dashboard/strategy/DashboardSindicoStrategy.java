@@ -1,13 +1,13 @@
 package org.morah.morah.dashboard.strategy;
 
-import java.util.List;
-
-import org.morah.morah.aviso.dto.AvisoResponse;
-import org.morah.morah.aviso.repositorio.AvisoRepository;
+import org.morah.morah.aviso.servico.AvisoService;
 import org.morah.morah.comum.modelo.Perfil;
 import org.morah.morah.dashboard.dto.DashboardResponse;
 import org.morah.morah.dashboard.dto.DashboardSindicoResponse;
+import org.morah.morah.financeiro.servico.InadimplenciaService;
+import org.morah.morah.ocorrencia.servico.OcorrenciaService;
 import org.morah.morah.seguranca.jwt.UsuarioAutenticado;
+import org.morah.morah.unidade.servico.SolicitacaoVinculoService;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
@@ -19,7 +19,12 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class DashboardSindicoStrategy implements DashboardStrategy {
 
-    private final AvisoRepository avisoRepository;
+    private static final int QUANTIDADE_DE_AVISOS = 5;
+
+    private final AvisoService avisoService;
+    private final InadimplenciaService inadimplenciaService;
+    private final SolicitacaoVinculoService solicitacaoVinculoService;
+    private final OcorrenciaService ocorrenciaService;
 
     @Override
     public Perfil perfilAtendido() {
@@ -28,14 +33,14 @@ public class DashboardSindicoStrategy implements DashboardStrategy {
 
     @Override
     public DashboardResponse montar(UsuarioAutenticado usuario) {
-        var paginacao = PageRequest.of(0, 5, Sort.by(Sort.Direction.DESC, "publicadoEm"));
+        Long condominioId = usuario.condominioId();
+        var paginacao = PageRequest.of(0, QUANTIDADE_DE_AVISOS, Sort.by(Sort.Direction.DESC, "publicadoEm"));
 
-        List<AvisoResponse> avisos = avisoRepository
-                .findByCondominioId(usuario.condominioId(), paginacao)
-                .map(AvisoResponse::de)
-                .getContent();
-
-        // Os contadores virao dos modulos de vinculos e ocorrencias quando forem implementados.
-        return new DashboardSindicoResponse(usuario.perfil().getValor(), avisos, 0, 0);
+        return new DashboardSindicoResponse(
+                usuario.perfil().getValor(),
+                inadimplenciaService.resumo(condominioId),
+                avisoService.listarVisiveis(usuario, null, paginacao).content(),
+                solicitacaoVinculoService.contarPendentes(condominioId),
+                ocorrenciaService.contarAbertas(condominioId));
     }
 }

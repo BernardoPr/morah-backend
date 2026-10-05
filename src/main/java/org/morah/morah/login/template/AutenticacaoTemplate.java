@@ -9,7 +9,7 @@ import org.morah.morah.usuario.modelo.VinculoPerfil;
 import org.morah.morah.usuario.repositorio.UsuarioRepository;
 
 /**
- * PADRAO DE PROJETO: TEMPLATE METHOD (exemplo 2 de 3).
+ * PADRAO DE PROJETO: TEMPLATE METHOD (exemplo 2 de 4).
  *
  * <p><b>Problema:</b> existem formas diferentes de autenticar (CPF + senha hoje; refresh token
  * para renovar a sessao; amanha biometria ou Keycloak). Todas terminam igual: conferir se o
