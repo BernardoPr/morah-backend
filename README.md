@@ -1,11 +1,11 @@
 # Morah API
 
-Base (template) da API do sistema Morah: **Java 21 + Spring Boot 4 + MongoDB Atlas**.
+API do sistema Morah (gestão de condomínio): **Java 21 + Spring Boot 4 + MongoDB Atlas**.
 
-O objetivo deste repositório é servir de **esqueleto pronto** para o time: a arquitetura,
-a segurança, o tratamento de erros, a paginação e os padrões de projeto já estão no lugar.
-As regras de negócio de cada módulo (financeiro, portaria, reservas, encomendas...) ainda
-serão implementadas — a base mostra exatamente onde cada coisa deve entrar.
+Todos os módulos do contrato estão implementados — login, tela inicial, financeiro, portaria,
+avisos, reservas de áreas comuns, minha unidade, encomendas e notificações — com segurança por
+perfil, erros no padrão RFC 9457, paginação e os padrões de projeto da disciplina
+(Singleton, Template Method, Strategy e State).
 
 - Contrato com o front: [`Documentos/morah-api.yaml`](Documentos/morah-api.yaml)
 - Estrutura de pastas e padrões de projeto: [`ARQUITETURA.md`](ARQUITETURA.md)
@@ -39,16 +39,26 @@ variável de ambiente antes de subir:
 export MONGODB_URI="mongodb+srv://usuario:senha@cluster0.xxxxx.mongodb.net/morah"
 ```
 
-### Usuários de teste
+### Dados de teste
 
-Na primeira execução com o banco vazio, a aplicação cria dois usuários (senha `morah1234`):
+Na primeira execução, a aplicação cria um condomínio de exemplo ("Residencial Morah") com as
+unidades **101, 102** (Bloco A) e **201, 202** (Bloco B) — o id da unidade é o número do
+apartamento — e estes usuários (senha `morah1234`):
 
-| CPF           | Nome        | Perfis                                   |
-|---------------|-------------|------------------------------------------|
-| `11111111111` | Ana Souza   | morador (Apto 101)                       |
-| `22222222222` | Carlos Lima | síndico **e** morador (Apto 202)         |
+| CPF           | Nome        | Perfis                                         |
+|---------------|-------------|------------------------------------------------|
+| `11111111111` | Ana Souza   | morador (Apto 101, inquilina)                  |
+| `22222222222` | Carlos Lima | síndico **e** morador (Apto 202)               |
+| `33333333333` | Joana Reis  | portaria                                       |
+| `44444444444` | Bruno Alves | proprietário (Apto 101, alugado para a Ana)    |
 
 Use o Carlos para testar a troca de contexto (`POST /auth/contexto`).
+
+Cada módulo também cria dados de demonstração, para as telas não ficarem vazias: vínculos das
+unidades e uma solicitação de dependente pendente, áreas comuns (salão, churrasqueira, quadra,
+academia) e uma reserva da Ana para amanhã, taxas condominiais com um boleto atrasado no 101,
+uma prestação de contas e uma encomenda aguardando retirada no 101 (o código de retirada sai no
+log da aplicação).
 
 ---
 
@@ -84,21 +94,49 @@ curl http://localhost:8080/v1/auth/me -H "Authorization: Bearer SEU_TOKEN"
 
 No Swagger UI, clique em **Authorize** e cole o token.
 
-### Endpoints que já funcionam
+### Endpoints
 
-| Método | Rota | Quem acessa | O que faz |
-|--------|------|-------------|-----------|
-| POST | `/auth/login` | público | Entra com CPF e senha |
-| POST | `/auth/refresh` | público | Renova a sessão |
-| GET | `/auth/me` | autenticado | Dados da pessoa + perfis disponíveis |
-| POST | `/auth/contexto` | autenticado | Troca o condomínio/perfil ativo |
-| POST | `/auth/logout` | autenticado | Encerra a sessão |
-| GET | `/home/dashboard` | autenticado | Tela inicial (muda conforme o perfil) |
-| GET/POST/PATCH/DELETE | `/avisos` | leitura: todos / escrita: síndico | CRUD do mural |
-| GET | `/avisos/exportar?formato=csv` | síndico | Baixa a lista em csv ou json |
-| GET/PATCH | `/notificacoes` | autenticado | Notificações do usuário |
-| POST/GET | `/usuarios` | síndico | Cadastro de usuários |
-| GET | `/monitor/metricas` | público | Mostra os singletons funcionando |
+A lista completa, com os corpos de requisição, está no Swagger. Resumo por módulo
+(M = morador, P = proprietário, S = síndico, R = portaria):
+
+| Módulo | Rotas | Quem acessa |
+|--------|-------|-------------|
+| Login | `POST /auth/login`, `POST /auth/refresh` | público |
+| | `GET /auth/me`, `POST /auth/contexto`, `POST /auth/logout` | autenticado |
+| Tela inicial | `GET /home/dashboard` (muda conforme o perfil) | todos |
+| Avisos | `GET /avisos`, `GET /avisos/{id}` (marca como lido; 410 se vencido) | todos |
+| | `POST`, `PATCH`, `DELETE /avisos...`, `GET /avisos/exportar?formato=csv` | S |
+| Financeiro | `GET /financeiro/cobrancas`, `GET /financeiro/cobrancas/{id}`, `GET /financeiro/documentos` | M, P, S |
+| | `GET /financeiro/cobrancas/{id}/pix` | M, P |
+| | `POST .../baixa-manual`, `POST /financeiro/documentos`, `POST /financeiro/taxas`, `POST /financeiro/taxas/{id}/gerar-cobrancas`, `GET /financeiro/inadimplencia` | S |
+| | `POST /financeiro/webhooks/pagamentos` | gateway (assinatura HMAC) |
+| Portaria | `POST /portaria/visitantes`, `POST .../reenviar`, `POST /portaria/acessos` | R |
+| | `GET /portaria/autorizacoes`, `GET /portaria/autorizacoes/{id}` | R, M, P |
+| | `PATCH /portaria/autorizacoes/{id}/decisao` | M, P |
+| | `GET /portaria/acessos` | R, S |
+| Reservas | `GET /areas-comuns`, `GET /reservas`, `GET /reservas/{id}` | todos |
+| | `GET /areas-comuns/{id}/disponibilidade`, `POST /reservas`, `DELETE /reservas/{id}` | M, P |
+| | `POST /reservas/{id}/vistoria` | R |
+| Minha Unidade | `GET /unidades/minha`, `GET /unidades/minha/vinculos`, `POST /unidades/minha/vinculos/solicitacoes` | M, P |
+| | `POST /unidades/minha/inquilinos`, `DELETE /unidades/minha/inquilinos/{id}` | P |
+| | `GET /unidades/{id}`, `GET`/`PATCH /unidades/{id}/vinculos/solicitacoes...` | S |
+| Encomendas | `GET /encomendas`, `GET /encomendas/{id}` | todos |
+| | `POST /encomendas`, `POST /encomendas/{id}/retirada` | R |
+| | `POST /encomendas/{id}/autorizacoes-retirada`, `POST /encomendas/{id}/ocorrencias` | M, P |
+| Notificações | `GET /notificacoes`, `PATCH /notificacoes/{id}/lida` | todos |
+| Apoio (fora do contrato) | `POST`/`GET /usuarios`, `POST /usuarios/{id}/desativar` | S |
+| | `GET /monitor/metricas` (mostra os singletons) | público |
+
+### Testando o webhook de pagamento
+
+O gateway assina o corpo com HMAC-SHA256 usando o segredo `WEBHOOK_SEGREDO`. Para simular:
+
+```bash
+CORPO='{"transacaoId":"tx-1","cobrancaId":1,"status":"confirmado"}'
+ASSINATURA=$(printf '%s' "$CORPO" | openssl dgst -sha256 -hmac "morah-webhook-de-desenvolvimento" | sed 's/^.* //')
+curl -X POST http://localhost:8080/v1/financeiro/webhooks/pagamentos \
+  -H "Content-Type: application/json" -H "X-Webhook-Signature: $ASSINATURA" -d "$CORPO"
+```
 
 > **Diferença em relação ao contrato:** o `morah-api.yaml` previa o Keycloak como servidor de
 > autenticação e, por isso, não tinha rota de usuário/senha. Como a hospedagem será no plano
@@ -113,8 +151,10 @@ No Swagger UI, clique em **Authorize** e cole o token.
 ./gradlew test
 ```
 
-Os testes não precisam de banco: os singletons e as strategies são testados isoladamente e o
-fluxo de login usa um repositório falso (`@MockitoBean`).
+Os testes não precisam de banco: as regras de cada módulo e as classes de padrão de projeto são
+testadas com repositórios falsos (Mockito), e cada módulo tem um teste HTTP de segurança e
+formato do JSON. O `MapeamentoMongoTest` confere, sem banco, que todas as entidades vão para o
+formato do MongoDB (BSON) e voltam iguais.
 
 ---
 
@@ -138,6 +178,8 @@ O arquivo sai em `build/libs/Morah-0.0.1-SNAPSHOT.jar`.
 | `MONGODB_URI` | string de conexão do Atlas |
 | `JWT_SEGREDO` | um texto secreto com 32+ caracteres |
 | `CORS_ORIGENS` | URL do front, ex.: `https://morah.vercel.app` |
+| `WEBHOOK_SEGREDO` | segredo combinado com o gateway de pagamento |
+| `CHAVE_PIX` | chave PIX do condomínio (usada no código copia-e-cola) |
 | `SPRING_PROFILES_ACTIVE` | `prod` |
 
 5. **Faça o deploy** do jar (pelo plugin do Azure no VS Code/IntelliJ, pelo `az webapp deploy`
@@ -154,8 +196,9 @@ A aplicação usa a porta indicada pela variável `PORT` (o Azure define isso so
 
 ## 5. Onde continuar o trabalho
 
-Cada módulo novo segue o mesmo desenho do módulo `aviso` (modelo → repositório → service →
-controller). O passo a passo está em [`ARQUITETURA.md`](ARQUITETURA.md).
+Cada módulo novo segue o mesmo desenho dos existentes (modelo → repositório → service →
+controller). O passo a passo e as limitações conhecidas (integrações simuladas, ausência de
+transações e de rotinas agendadas) estão em [`ARQUITETURA.md`](ARQUITETURA.md).
 
 ---
 
@@ -167,7 +210,8 @@ controller). O passo a passo está em [`ARQUITETURA.md`](ARQUITETURA.md).
 | `401` em todas as chamadas | O token expirou (1 hora). Faça login de novo ou use `POST /auth/refresh` |
 | `403` mesmo logado | O perfil ativo não tem permissão para a rota; troque o contexto em `POST /auth/contexto` |
 | O front reclama de CORS | Inclua a URL do front na variável `CORS_ORIGENS` |
-| Quero recriar os usuários de exemplo | Apague a coleção `usuarios` no banco e reinicie com `morah.carga-inicial=true` |
+| Quero recriar os dados de exemplo | Apague o banco (ou as coleções do módulo) e reinicie com `morah.carga-inicial=true`; cada carga só cria o que estiver faltando |
+| Datas de banco antigo aparecem um dia antes/depois | Bancos criados antes da mudança para datas em UTC (`ConfiguracaoMongo`) devem ser recriados |
 
 > Pequena diferença em relação ao contrato: `GET /notificacoes` devolve a lista no mesmo
 > envelope paginado dos outros endpoints (`{ "content": [...], "page": {...} }`) em vez de um

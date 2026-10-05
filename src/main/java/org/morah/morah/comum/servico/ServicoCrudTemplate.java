@@ -7,7 +7,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.mongodb.repository.MongoRepository;
 
 /**
- * PADRAO DE PROJETO: TEMPLATE METHOD (exemplo 1 de 3).
+ * PADRAO DE PROJETO: TEMPLATE METHOD (exemplo 1 de 4).
  *
  * <p><b>Problema:</b> todo CRUD da API repete os mesmos passos (validar -> converter ->
  * salvar -> responder). Copiar isso em cada service gera codigo duplicado.
@@ -18,7 +18,11 @@ import org.springframework.data.mongodb.repository.MongoRepository;
  * ({@code abstract}) e, se quiserem, os passos opcionais ({@code protected} com corpo vazio,
  * chamados de <i>hooks</i>).
  *
- * <p><b>Quem usa:</b> {@code UsuarioService} e {@code AvisoService}.
+ * <p><b>Quem usa:</b> {@code UsuarioService}, {@code AvisoService}, {@code EncomendaService},
+ * {@code ReservaService} e {@code SolicitacaoVinculoService}.
+ *
+ * <p><b>Atencao:</b> {@link #listar} e {@link #buscarPorId} nao filtram por condominio. Os
+ * modulos expoem metodos proprios, filtrados pelo contexto do token, em vez desses dois.
  *
  * @param <T> entidade do banco (ex.: Aviso)
  * @param <C> DTO de entrada, o que o front envia (ex.: AvisoCreateRequest)

@@ -5,7 +5,7 @@ import org.morah.morah.notificacao.modelo.Notificacao;
 import org.morah.morah.usuario.modelo.Usuario;
 
 /**
- * PADRAO DE PROJETO: STRATEGY (exemplo 2 de 3) - contrato comum.
+ * PADRAO DE PROJETO: STRATEGY (exemplo 2 de 6) - contrato comum.
  *
  * <p><b>Problema:</b> uma notificacao pode sair por e-mail, push ou SMS. Resolver isso com
  * {@code if/else} espalha o codigo de envio e obriga a mexer no service a cada canal novo.

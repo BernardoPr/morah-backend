@@ -5,7 +5,7 @@ import org.morah.morah.dashboard.dto.DashboardResponse;
 import org.morah.morah.seguranca.jwt.UsuarioAutenticado;
 
 /**
- * PADRAO DE PROJETO: STRATEGY (exemplo 1 de 3) - contrato comum.
+ * PADRAO DE PROJETO: STRATEGY (exemplo 1 de 6) - contrato comum.
  *
  * <p><b>Problema:</b> o endpoint {@code GET /home/dashboard} e unico, mas devolve conteudos
  * completamente diferentes conforme o perfil ativo (morador, sindico ou portaria).
